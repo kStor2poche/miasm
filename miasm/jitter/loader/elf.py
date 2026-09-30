@@ -24,11 +24,15 @@ log.setLevel(logging.CRITICAL)
 
 
 def get_import_address_elf(e):
+    # TODO: rely on DT_NEEDED and/or .dynsym rather than relocs ?
     import2addr = defaultdict(set)
     for sh in e.sh:
-        if not hasattr(sh, 'rel'):
-            continue
-        for k, v in viewitems(sh.rel):
+        rel = []
+        if hasattr(sh, 'rel'):
+            rel += sh.rel.items()
+        if hasattr(sh, 'rela'):
+            rel += sh.rela.items()
+        for k, v in rel:
             k = force_str(k)
             import2addr[('xxx', k)].add(v.offset)
     return import2addr
@@ -183,8 +187,14 @@ def apply_reloc_x86(elf, vm, section, base_addr, loc_db: LocationDB | None, run_
         raise ValueError(f"Unsupported elf size {elf.size}")
 
     symb_section = section.linksection
-    for reloc in section.reltab:
+    if hasattr(section, "reltab"):
+        table = section.reltab
+    elif hasattr(section, "relatab"):
+        table = section.relatab
+    else:
+        raise ValueError(f"Trying to apply reloc on section without RelTable or RelATable.")
 
+    for reloc in table:
         # Parse relocation info
         r_info = reloc.info
         if elf.size == 64:
@@ -202,7 +212,10 @@ def apply_reloc_x86(elf, vm, section, base_addr, loc_db: LocationDB | None, run_
             symbol_name = symbol_entry.name.decode()
 
         r_offset = reloc.offset
-        r_addend = reloc.cstr.sym
+        if hasattr(reloc, "addend"):
+            addend = reloc.addend
+        else:
+            addend = int.from_bytes(elf.get_virt().get(r_offset, r_offset + elf.size // 8), byteorder="little")
 
         if (elf.size, reloc.type) in [
                 (64, elf_csts.R_X86_64_RELATIVE),
@@ -225,7 +238,7 @@ def apply_reloc_x86(elf, vm, section, base_addr, loc_db: LocationDB | None, run_
             if addr_symb is None:
                 log.warning(f"Unable to find symbol {symbol_name}")
                 continue
-            addr = addr_symb + r_addend
+            addr = addr_symb + addend
             where = base_addr + r_offset
         elif (elf.size, reloc.type) in [
                 (64, elf_csts.R_X86_64_TPOFF64),
@@ -325,7 +338,7 @@ def vm_load_elf(vm, fdata, name="", base_addr=0, loc_db=None, apply_reloc=False,
         arch = guess_arch(elf)
         sections = []
         for section in elf.sh:
-            if not hasattr(section, 'reltab'):
+            if not (hasattr(section, 'reltab') or hasattr(section, 'relatab')):
                 continue
             if isinstance(section, elf_init.RelATable):
                 pass
