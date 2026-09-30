@@ -3,6 +3,7 @@ import warnings
 
 from miasm.core.bin_stream import bin_stream_str, bin_stream_elf, bin_stream_pe
 from miasm.jitter.csts import PAGE_READ
+from miasm.loader.elf import ET_EXEC
 
 
 log = logging.getLogger("binary")
@@ -202,6 +203,9 @@ class ContainerELF(Container):
         # Build the bin_stream instance and set the entry point
         try:
             self._bin_stream = bin_stream_elf(self._executable)
+            if self._executable.Ehdr.type == ET_EXEC:
+                addr = 0
+                log.warning("This elf has Ehdr.type == ET_EXEC meaning it isn't relocatable. Using 0 as base_addr.")
             self._entry_point = self._executable.Ehdr.entry + addr
         except Exception as error:
             raise ContainerParsingException('Cannot read ELF: %s' % error)

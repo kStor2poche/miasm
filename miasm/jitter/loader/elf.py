@@ -305,6 +305,9 @@ def vm_load_elf(vm, fdata, name="", base_addr=0, loc_db=None, apply_reloc=False,
     elf = elf_init.ELF(fdata, **kargs)
     i = interval()
     all_data = {}
+    if elf.Ehdr.type == elf_csts.ET_EXEC and base_addr != 0:
+        log.warning("This elf has Ehdr.type == ET_EXEC meaning it isn't relocatable. Reversing base_addr to 0.")
+        base_addr = 0
 
     for p in elf.ph.phlist:
         if p.ph.type != elf_csts.PT_LOAD:
