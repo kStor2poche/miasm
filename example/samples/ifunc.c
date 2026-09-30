@@ -1,37 +1,34 @@
-// Compile with gcc -masm=intel -o ifunc ifunc.c
+// Compile with gcc -fno-stack-protector ifunc ifunc.c
 
+#include <stdbool.h>
 #include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-void pxor_c(uint64_t a[2], uint64_t b[2]) {
-    printf("in boring ver.\n");
-    a[0] ^= b[0];
-    a[1] ^= b[1];
+
+const char *func_1() {
+    return "zglorg";
 }
-void pxor_sse2(uint64_t a[2], uint64_t b[2]) {
-    printf("in sse2 ver.\n");
-    asm("MOVDQA xmm1, [%1]\n\t"
-        "MOVDQA xmm2, [%2]\n\t"
-        "PXOR xmm1, xmm2"
-        : "+r" (a)
-        : "r" (a),
-          "r" (b)
-    );
+const char *func_2() {
+    return "bloups";
 }
 
-void pxor(uint64_t a[2], uint64_t b[2]) __attribute__((ifunc("resolve_pxor")));
+static bool use_func2;
 
-static void *resolve_pxor() {
-    printf("sse2 support is %b\n", __builtin_cpu_supports("sse2"));
-    if (__builtin_cpu_supports("sse2")) {
-        return pxor_sse2;
+char *func() __attribute__((ifunc("resolve_func")));
+
+// Function pointer type matching `func` prototype
+typedef const char *(*func_type)();
+
+static func_type resolve_func() {
+    if (use_func2) {
+        return func_2;
     }
-    return pxor_c;
+    return func_1;
 }
 
-int main(void) {
-    uint64_t a[2] = {0x1337, 0xBEEF};
-    uint64_t b[2] = {0xBABA, 0x15DA};
-    pxor(a, b);
-    return EXIT_SUCCESS;
+char *intermediate() {
+    return func();
+}
+
+int main() {
+    intermediate();
+    return 0;
 }
