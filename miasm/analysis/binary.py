@@ -164,7 +164,7 @@ class ContainerPE(Container):
 class ContainerELF(Container):
     "Container abstraction for ELF"
 
-    def parse(self, data, vm=None, addr=0, apply_reloc=False, **kwargs):
+    def parse(self, data, vm=None, addr=0, apply_reloc=False, run_ifuncs=False, **kwargs):
         """Load an ELF from @data
         @data: bytes containing the ELF bytes
         @vm (optional): VmMngr instance. If set, load the ELF in virtual memory
@@ -190,7 +190,8 @@ class ContainerELF(Container):
                     data,
                     loc_db=self.loc_db,
                     base_addr=addr,
-                    apply_reloc=apply_reloc
+                    apply_reloc=apply_reloc,
+                    run_ifuncs=run_ifuncs
                 )
             else:
                 self._executable = elf_init.ELF(data)
