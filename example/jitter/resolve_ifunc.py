@@ -4,7 +4,7 @@ from argparse import ArgumentParser
 from miasm.analysis.binary import Container, ContainerELF
 from miasm.analysis.machine import Machine
 from miasm.core.locationdb import LocationDB
-from miasm.jitter.loader.elf import get_ifuncs, run_ifunc_resolvers_copy
+from miasm.jitter.loader.elf import get_ifuncs, apply_ifunc
 from miasm.loader.elf import ET_EXEC
 
 
@@ -41,7 +41,7 @@ def launch(jitter):
     return jitter.get_c_str(jitter.cpu.RAX)
 
 if __name__ == "__main__":
-    parser = ArgumentParser(description="x86 ELF ifunc relocs (e.g. apsamples/ifunc)")
+    parser = ArgumentParser(description="x86 ELF ifunc relocs (e.g. `python resolve_ifunc.py -j llvm -vv ../samples/ifunc`)")
     parser.add_argument("filename", help="ELF to apply (ifunc) relocs to")
     parser.add_argument("-j", "--jitter",
                         help="Jitter engine (default is 'gcc')",
@@ -78,19 +78,23 @@ if __name__ == "__main__":
     # The ifunc resolver in ../samples/ifunc uses .bss variable `use_func2`
     # to know whether to redirect to `func1` or `func2` when we execute `func`
     # which we proceed to set to `true`
+    #
+    # Note that we could've created a separate jitter to run ifuncs on (5th arg
+    # of apply_ifunc) if we wanted to keep our bss clean for the regular jitter
     use_func2_addr = loc_db.get_name_offset("use_func2")
-    if use_func2_addr is not None and jitter.vm.is_mapped(use_func2_addr + base_addr, 1):
-        jitter.vm.set_mem(use_func2_addr + base_addr, b'\x01')
-        log.info(f"Set symbol use_func2 (@0x{use_func2_addr + base_addr:x}) to 1")
-    else:
-        if use_func2_addr is None:
-            raise ValueError("symbol use_func2 was not found")
-        else:
-            raise ValueError(f"use_func2 exists but doesn't seem to be loaded inside our vm ({use_func2_addr+base_addr=:x})\n{jitter.vm}")
 
-    # we can then run our infunc resolver
+    if use_func2_addr is None:
+        raise ValueError("symbol use_func2 was not found")
+    if not jitter.vm.is_mapped(use_func2_addr + base_addr, 1):
+        raise ValueError(f"use_func2 exists but doesn't seem to be loaded inside our vm ({use_func2_addr+base_addr=:x})\n{jitter.vm}")
+
+    jitter.vm.set_mem(use_func2_addr + base_addr, b'\x01')
+    log.info(f"Set symbol use_func2 (@0x{use_func2_addr + base_addr:x}) to 1")
+
+    # we can then run our ifunc resolver
     ifunc_resolvers = get_ifuncs(elf.executable, base_addr, with_syms=False)
-    run_ifunc_resolvers_copy(ifunc_resolvers, elf.executable, jitter.vm, loc_db)
+    for reloc, ifunc_resolver in ifunc_resolvers:
+        apply_ifunc(reloc, ifunc_resolver, elf.executable, jitter)
 
     res2 = launch(jitter)
     log.info(f"Forcing ifunc resolving to func2 returned {res2}.")

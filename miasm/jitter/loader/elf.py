@@ -37,14 +37,6 @@ def get_import_address_elf(e):
             import2addr[('xxx', k)].add(v.offset)
     return import2addr
 
-def get_addr_writer(elf, vm):
-    if elf.size == 64:
-        return lambda vaddr, addr: vm.set_mem(vaddr, struct.pack("<Q", addr))
-    elif elf.size == 32:
-        return lambda vaddr, addr: vm.set_mem(vaddr, struct.pack("<I", addr))
-    else:
-        raise ValueError(f"Unsupported elf size {elf.size}")
-
 def preload_elf(vm, e, runtime_lib, patch_vm_imp=True, loc_db=None, elf_base_addr: int = 0):
     # XXX quick hack
     fa = get_import_address_elf(e)
@@ -183,11 +175,10 @@ def apply_reloc_x86(elf, vm, section, base_addr, loc_db: LocationDB | None, run_
     @section: elf's section containing relocation to perform
     @base_addr: addr to reloc to
     @loc_db: LocationDB used to retrieve symbols'offset
+    @run_ifuncs: whether or not to run ifuncs and apply their reloc
     """
     if run_ifuncs and elf.Ehdr.type == elf_csts.ET_EXEC:
         log.warning("Running ifuncs as a part of the loading process is only accurate for dynamically-linked executables, as they are normally ran during glibc initialization for static and static-pie executables. See https://sourceware.org/glibc/manual/latest/html_node/Indirect-Functions.html#When-IFUNC-Resolvers-Run.")
-
-    addr_writer = get_addr_writer(elf, vm)
 
     log.debug(f"Applying relocations for section {section}")
 
@@ -198,6 +189,31 @@ def apply_reloc_x86(elf, vm, section, base_addr, loc_db: LocationDB | None, run_
         table = section.relatab
     else:
         raise ValueError(f"Trying to apply reloc on section without RelTable or RelATable.")
+
+    if run_ifuncs:
+        ifunc_machine = Machine(guess_arch(elf))
+        ifunc_jitter = ifunc_machine.jitter(loc_db=loc_db)
+
+        last_addr = 0x100
+        stack_base_found = False
+        ifunc_jitter.stack_size = 0x100
+        for map_addr, map_mem in vm.get_all_memory().items():
+            map_data = map_mem["data"]
+            # find somewhere for our stack to go
+            if map_addr - last_addr > ifunc_jitter.stack_size:
+                ifunc_jitter.stack_base = last_addr
+                last_addr = float("inf")
+                stack_base_found = True
+            else:
+                last_addr = map_addr + len(map_data)
+
+            # and copy the memory already mapped by the loader
+            ifunc_jitter.vm.add_memory_page(map_addr, map_mem["access"], map_data)
+
+        if stack_base_found:
+            ifunc_jitter.init_stack()
+        else:
+            raise ValueError("Couldn't find enough space to allocate our ifunc runner's stack")
 
     for reloc in table:
         # Parse relocation info
@@ -272,11 +288,15 @@ def apply_reloc_x86(elf, vm, section, base_addr, loc_db: LocationDB | None, run_
         else:
             raise ValueError(f"Unknown relocation type: {reloc.type} ({reloc})")
         if is_ifunc and run_ifuncs:
-            _run_ifunc_resolver_copy((where, addr), elf, vm, loc_db)
-            continue
+            addr = _resolve_ifunc(where, addr, elf, ifunc_jitter)
 
         log.debug(f"Write {addr:x} at {where:x}")
-        addr_writer(where, addr)
+        if elf.size == 64:
+            return vm.set_u64(where, addr)
+        elif elf.size == 32:
+            return vm.set_u32(where, addr)
+        else:
+            raise ValueError(f"Unsupported elf size {elf.size}")
 
 
 def vm_load_elf(vm, fdata, name="", base_addr=0, loc_db=None, apply_reloc=False,
@@ -379,105 +399,60 @@ def get_ifuncs(elf, base_addr, with_syms=False):
                     res.append((to_reloc, resolver))
     return res
 
-def run_ifunc_resolvers_copy(resolvers, elf, vm, loc_db):
-    """
-    WARNING: this is only accurate for dynamically-linked ELFs. Static and static-pie executables' ifuncs are loaded at runtime during libc initialization.
-    Runs all provided ifunc resolvers, starting each ifunc off of a clean copy of the passed vm
-
-    @resolvers: list[(reloc: int, resolved: int)]
-    @elf: miasm.loader.elf_init.ELF
-    @vm: VmMngr - with the loaded elf to copy
-    @loc_db: LocationDB - also with the loaded elf
-    @return: None
-    """
-    for resolver in resolvers:
-        _run_ifunc_resolver_copy(resolver, elf, vm, loc_db)
-
-def run_ifunc_resolvers_mut(resolvers, elf, jitter):
+def _resolve_ifunc(reloc_addr, resolver_addr, elf, run_jitter):
     """
     WARNING: this is only accurate for dynamically-linked binaries. Static and static-pie executables' ifuncs are loaded at runtime during libc initialization.
     WARNING: this requires the jitter to have an initialized stack
-    Runs all provided ifunc resolvers
+    Runs provided ifunc resolver
 
-    @resolvers: list[(reloc: int, resolved: int)]
+    @reloc_addr: int - the address where we want to apply our reloc
+    @resolver_addr: int - the address of the ifunc resolver
     @elf: miasm.loader.elf_init.ELF
-    @jitter: Jitter - a jitter with the related elf loaded
+    @run_jitter: Jitter to run the ifunc resolver on
     @return: None
     """
-    for resolver in resolvers:
-        _run_ifunc_resolver_mut(resolver, elf, jitter)
-
-def _run_ifunc_resolver_copy(resolver, elf, vm, loc_db):
-    """
-    WARNING: this is only accurate for dynamically-linked binaries. Static and static-pie executables' ifuncs are loaded at runtime during libc initialization.
-    Runs all provided ifunc resolvers
-
-    @resolver: (reloc: int, resolved: int)
-    @elf: miasm.loader.elf_init.ELF
-    @vm: VmMngr - with the loaded elf to copy
-    @loc_db: LocationDB - idem
-    @return: None
-    """
-    addr_writer = get_addr_writer(elf, vm)
-    ifunc_machine = Machine(guess_arch(elf))
-    ifunc_jitter = ifunc_machine.jitter(loc_db)
-
-    last_addr = 0x100
-    stack_base_found = False
-    ifunc_jitter.stack_size = 0x100
-    for map_addr, map_mem in vm.get_all_memory().items():
-        map_data = map_mem["data"]
-        # find somewhere for our stack to go
-        if map_addr - last_addr > ifunc_jitter.stack_size:
-            ifunc_jitter.stack_base = last_addr
-            last_addr = float("inf")
-            stack_base_found = True
-        else:
-            last_addr = map_addr + len(map_data)
-
-        # and copy the memory already mapped by the loader (and maybe the user, alas)
-        ifunc_jitter.vm.add_memory_page(map_addr, map_mem["access"], map_data)
-
-    if stack_base_found:
-        ifunc_jitter.init_stack()
-    else:
-        raise ValueError("Couldn't find enough space to allocate our ifunc runner's stack")
-    _run_ifunc_resolver_mut(resolver, elf, ifunc_jitter, addr_writer)
-
-def _run_ifunc_resolver_mut(resolver, elf, jitter, addr_writer=None):
-    """
-    WARNING: this is only accurate for dynamically-linked binaries. Static and static-pie executables' ifuncs are loaded at runtime during libc initialization.
-    WARNING: this requires the jitter to have an initialized stack
-    Runs all provided ifunc resolvers
-
-    @resolver: (reloc: int, resolved: int)
-    @elf: miasm.loader.elf_init.ELF
-    @jitter: Jitter - a jitter with the related elf loaded
-    @addr_writer: Function | None - if None, will be set to the writer associated to the given jitter's vm. This is probably what you want if you use this function in your script.
-    @return: None
-    """
-    if addr_writer is None:
-        addr_writer = get_addr_writer(elf, jitter.vm)
-
     end_addr = 0x1337beef
-    def _code_sentinelle(jitter):
-        jitter.running = False
+    def _code_sentinelle(j):
+        j.running = False
         return False
-    jitter.add_breakpoint(end_addr, _code_sentinelle)
+    run_jitter.add_breakpoint(end_addr, _code_sentinelle)
     if elf.size == 32:
-        jitter.push_uint32_t(end_addr)
+        run_jitter.push_uint32_t(end_addr)
     elif elf.size == 64:
-        jitter.push_uint64_t(end_addr)
+        run_jitter.push_uint64_t(end_addr)
     else:
         raise ValueError(
-            f"Cannot apply ifunc relocations on an ELF with {elf.size=}"
+            f"Cannot resolve ifunc on an ELF with unsupported size {elf.size}"
         )
 
-    jitter.run(resolver[1])
-    resolved_funcaddr = getattr(jitter.cpu, "RAX" if elf.size == 64 else "EAX")
-    log.debug(f"Write {resolver[0]:x} at {resolved_funcaddr:x}")
-    addr_writer(resolver[0], resolved_funcaddr)
+    run_jitter.run(resolver_addr)
+    resolved_funcaddr = getattr(run_jitter.cpu, "RAX" if elf.size == 64 else "EAX")
+    return resolved_funcaddr
 
+def apply_ifunc(reloc_addr, resolver_addr, elf, jitter, run_jitter=None):
+    """
+    WARNING: this is only accurate for dynamically-linked binaries. Static and static-pie executables' ifuncs are loaded at runtime during libc initialization.
+    Runs and applies provided ifunc resolver
+
+    @reloc_addr: int - the address where we want to apply our reloc
+    @resolver_addr: int - the address of the ifunc resolver
+    @elf: miasm.loader.elf_init.ELF
+    @jitter: Jitter instance to apply the reloc to
+    @run_jitter: (optional) Jitter to run the ifunc resolver on in place of @jitter
+    @return: None
+    """
+    if run_jitter is None:
+        run_jitter = jitter
+
+    resolved_funcaddr = _resolve_ifunc(reloc_addr, resolver_addr, elf, run_jitter)
+
+    log.debug(f"Write {resolved_funcaddr:x} at {reloc_addr:x}")
+    if elf.size == 64:
+        return jitter.vm.set_u64(reloc_addr, resolved_funcaddr)
+    elif elf.size == 32:
+        return jitter.vm.set_u32(reloc_addr, resolved_funcaddr)
+    else:
+        raise ValueError(f"Unsupported elf size {elf.size}")
 
 class libimp_elf(libimp):
     pass

@@ -1,4 +1,4 @@
-// Compile with gcc -fno-stack-protector ifunc ifunc.c
+// Compile with gcc -fno-stack-protector -o ifunc ifunc.c
 
 #include <stdbool.h>
 #include <stdint.h>
