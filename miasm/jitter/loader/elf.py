@@ -236,6 +236,10 @@ def apply_reloc_x86(elf, vm, section, base_addr, loc_db: LocationDB | None, relo
                 # and copy the memory already mapped by the loader
                 ifunc_jitter.vm.add_memory_page(map_addr, map_mem["access"], map_data)
 
+            if not stack_base_found and last_addr + ifunc_jitter.stack_size < 1 << elf.size:
+                ifunc_jitter.stack_base = last_addr
+                stack_base_found = True
+
             if stack_base_found:
                 ifunc_jitter.init_stack()
             else:
