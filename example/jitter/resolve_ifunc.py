@@ -4,7 +4,7 @@ from argparse import ArgumentParser
 from miasm.analysis.binary import Container, ContainerELF
 from miasm.analysis.machine import Machine
 from miasm.core.locationdb import LocationDB
-from miasm.jitter.loader.elf import get_ifuncs, apply_ifunc
+from miasm.jitter.loader.elf import RelocOptions, get_ifuncs, apply_ifunc
 from miasm.loader.elf import ET_EXEC
 
 
@@ -20,8 +20,10 @@ def prepare(run_ifuncs: bool):
     myjit.init_stack()
     base_addr = 0x400000
 
+    reloc_options = RelocOptions(run_ifuncs=True, ifunc_jitter_engine=args.jitter)
+
     with open(args.filename, 'rb') as f:
-        elf: ContainerELF = Container.from_stream(f, addr=base_addr, loc_db=loc_db, vm=myjit.vm, apply_reloc=True, run_ifuncs=run_ifuncs)
+        elf: ContainerELF = Container.from_stream(f, addr=base_addr, loc_db=loc_db, vm=myjit.vm, apply_reloc=True, reloc_options=reloc_options)
         assert isinstance(elf, ContainerELF)
     if elf.executable.Ehdr.type == ET_EXEC:
         # static executables can't be rebased
@@ -81,6 +83,8 @@ if __name__ == "__main__":
     #
     # Note that we could've created a separate jitter to run ifuncs on (5th arg
     # of apply_ifunc) if we wanted to keep our bss clean for the regular jitter
+    # We also could've prepared a special jitter to pass in RelocOptions to
+    # achieve the same goal
     use_func2_addr = loc_db.get_name_offset("use_func2")
 
     if use_func2_addr is None:

@@ -1,6 +1,7 @@
 import struct
 from collections import defaultdict
 
+from typing import Literal
 from future.utils import viewitems
 
 from miasm.analysis.machine import Machine
@@ -167,17 +168,39 @@ def fill_loc_db_with_symbols(elf, loc_db, base_addr=0):
             else:
                 loc_db.add_location(name=name, offset=vaddr)
 
+class RelocOptions():
+    def __init__(self, run_ifuncs: bool = False, ifunc_jitter_engine: Literal["python", "gcc", "llvm"] | None = None, ifunc_jitter = None) -> None:
+        """@run_ifuncs: whether or not to run, resolve and apply ifuncs
+        @ifunc_jitter_engine: set to "gcc" by default, unless @ifunc_jitter is used. The engine to use for the default ifunc jitter.
+        @ifunc_jitter: a user-provided jitter to run/resolve ifuncs with. Needs to have an initialized stack. Overrides the default ifunc jitter.
 
-def apply_reloc_x86(elf, vm, section, base_addr, loc_db: LocationDB | None, run_ifuncs=False):
+        WARNING: @ifunc_jitter_engine and @ifunc_jitter are mutually exclusive.
+        """
+        if ifunc_jitter_engine is not None and ifunc_jitter is not None:
+            raise ValueError("ifunc_jitter_engine and ifunc_jitter are mutually exclusive")
+        self.run_ifuncs = run_ifuncs
+        if ifunc_jitter_engine is None:
+            if ifunc_jitter is None:
+                self.ifunc_jitter_engine = "gcc"
+        else:
+            self.ifunc_jitter_engine = ifunc_jitter_engine
+
+        if ifunc_jitter is not None:
+            self.ifunc_jitter = ifunc_jitter
+
+def apply_reloc_x86(elf, vm, section, base_addr, loc_db: LocationDB | None, reloc_options: RelocOptions | None = None):
     """Apply relocation for x86 ELF contained in the section @section
     @elf: miasm.loader's ELF instance
     @vm: VmMngr instance
     @section: elf's section containing relocation to perform
     @base_addr: addr to reloc to
     @loc_db: LocationDB used to retrieve symbols'offset
-    @run_ifuncs: whether or not to run ifuncs and apply their reloc
+    @reloc_options: Options for which reloc to process and how to process them
     """
-    if run_ifuncs and elf.Ehdr.type == elf_csts.ET_EXEC:
+    if reloc_options is None:
+        reloc_options = RelocOptions()
+
+    if reloc_options.run_ifuncs and elf.Ehdr.type == elf_csts.ET_EXEC:
         log.warning("Running ifuncs as a part of the loading process is only accurate for dynamically-linked executables, as they are normally ran during glibc initialization for static and static-pie executables. See https://sourceware.org/glibc/manual/latest/html_node/Indirect-Functions.html#When-IFUNC-Resolvers-Run.")
 
     log.debug(f"Applying relocations for section {section}")
@@ -190,30 +213,33 @@ def apply_reloc_x86(elf, vm, section, base_addr, loc_db: LocationDB | None, run_
     else:
         raise ValueError(f"Trying to apply reloc on section without RelTable or RelATable.")
 
-    if run_ifuncs:
-        ifunc_machine = Machine(guess_arch(elf))
-        ifunc_jitter = ifunc_machine.jitter(loc_db=loc_db)
-
-        last_addr = 0x100
-        stack_base_found = False
-        ifunc_jitter.stack_size = 0x100
-        for map_addr, map_mem in vm.get_all_memory().items():
-            map_data = map_mem["data"]
-            # find somewhere for our stack to go
-            if map_addr - last_addr > ifunc_jitter.stack_size:
-                ifunc_jitter.stack_base = last_addr
-                last_addr = float("inf")
-                stack_base_found = True
-            else:
-                last_addr = map_addr + len(map_data)
-
-            # and copy the memory already mapped by the loader
-            ifunc_jitter.vm.add_memory_page(map_addr, map_mem["access"], map_data)
-
-        if stack_base_found:
-            ifunc_jitter.init_stack()
+    if reloc_options.run_ifuncs:
+        if hasattr(reloc_options, "ifunc_jitter"):
+            ifunc_jitter = reloc_options.ifunc_jitter
         else:
-            raise ValueError("Couldn't find enough space to allocate our ifunc runner's stack")
+            ifunc_machine = Machine(guess_arch(elf))
+            ifunc_jitter = ifunc_machine.jitter(loc_db, reloc_options.ifunc_jitter_engine)
+
+            last_addr = 0x100
+            stack_base_found = False
+            ifunc_jitter.stack_size = 0x100
+            for map_addr, map_mem in vm.get_all_memory().items():
+                map_data = map_mem["data"]
+                # find somewhere for our stack to go
+                if map_addr - last_addr > ifunc_jitter.stack_size:
+                    ifunc_jitter.stack_base = last_addr
+                    last_addr = float("inf")
+                    stack_base_found = True
+                else:
+                    last_addr = map_addr + len(map_data)
+
+                # and copy the memory already mapped by the loader
+                ifunc_jitter.vm.add_memory_page(map_addr, map_mem["access"], map_data)
+
+            if stack_base_found:
+                ifunc_jitter.init_stack()
+            else:
+                raise ValueError("Couldn't find enough space to allocate our ifunc runner's stack")
 
     for reloc in table:
         # Parse relocation info
@@ -287,7 +313,7 @@ def apply_reloc_x86(elf, vm, section, base_addr, loc_db: LocationDB | None, run_
             where = base_addr + r_offset
         else:
             raise ValueError(f"Unknown relocation type: {reloc.type} ({reloc})")
-        if is_ifunc and run_ifuncs:
+        if is_ifunc and reloc_options.run_ifuncs:
             addr = _resolve_ifunc(where, addr, elf, ifunc_jitter)
 
         log.debug(f"Write {addr:x} at {where:x}")
@@ -300,13 +326,16 @@ def apply_reloc_x86(elf, vm, section, base_addr, loc_db: LocationDB | None, run_
 
 
 def vm_load_elf(vm, fdata, name="", base_addr=0, loc_db=None, apply_reloc=False,
-                run_ifuncs=False, **kargs):
+                reloc_options=None, **kargs):
     """
     Very dirty elf loader
     TODO XXX: implement real loader
     """
-    if run_ifuncs and not apply_reloc:
-        log.warning("vm_load_elf was called with run_ifuncs=True but they won't be run nor applied since apply_reloc=False.")
+    if reloc_options is None:
+        reloc_options = RelocOptions()
+
+    if reloc_options.run_ifuncs and not apply_reloc:
+        log.warning("vm_load_elf was called with reloc_options.run_ifuncs=True but they won't be run nor applied since apply_reloc=False.")
 
     elf = elf_init.ELF(fdata, **kargs)
     i = interval()
@@ -359,7 +388,7 @@ def vm_load_elf(vm, fdata, name="", base_addr=0, loc_db=None, apply_reloc=False,
             sections.append(section)
         for section in sections:
             if arch in ["x86_64", "x86_32"]:
-                apply_reloc_x86(elf, vm, section, base_addr, loc_db, run_ifuncs)
+                apply_reloc_x86(elf, vm, section, base_addr, loc_db, reloc_options)
             else:
                 log.debug("Unsupported relocation for arch %r" % arch)
 
@@ -401,7 +430,7 @@ def get_ifuncs(elf, base_addr, with_syms=False):
 
 def _resolve_ifunc(reloc_addr, resolver_addr, elf, run_jitter):
     """
-    WARNING: this is only accurate for dynamically-linked binaries. Static and static-pie executables' ifuncs are loaded at runtime during libc initialization.
+    WARNING: this is only accurate for dynamically-linked binaries. Static and static-pie executables' ifuncs are loaded at runtime during glibc initialization.
     WARNING: this requires the jitter to have an initialized stack
     Runs provided ifunc resolver
 
@@ -431,7 +460,8 @@ def _resolve_ifunc(reloc_addr, resolver_addr, elf, run_jitter):
 
 def apply_ifunc(reloc_addr, resolver_addr, elf, jitter, run_jitter=None):
     """
-    WARNING: this is only accurate for dynamically-linked binaries. Static and static-pie executables' ifuncs are loaded at runtime during libc initialization.
+    WARNING: this is only accurate for dynamically-linked binaries. Static and static-pie executables' ifuncs are loaded at runtime during glibc initialization.
+    WARNING: this requires the jitter or run_jitter (if present) to have an initialized stack
     Runs and applies provided ifunc resolver
 
     @reloc_addr: int - the address where we want to apply our reloc

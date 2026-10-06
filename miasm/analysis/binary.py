@@ -164,12 +164,13 @@ class ContainerPE(Container):
 class ContainerELF(Container):
     "Container abstraction for ELF"
 
-    def parse(self, data, vm=None, addr=0, apply_reloc=False, run_ifuncs=False, **kwargs):
+    def parse(self, data, vm=None, addr=0, apply_reloc=False, reloc_options=None, **kwargs):
         """Load an ELF from @data
         @data: bytes containing the ELF bytes
         @vm (optional): VmMngr instance. If set, load the ELF in virtual memory
         @addr (optional): base address the ELF in virtual memory
         @apply_reloc (optional): if set, apply relocation during ELF loading
+        @reloc_options (optional): see miasm.jitter.loader.elf.RelocOptions
 
         @addr and @apply_reloc are only meaningful in the context of a
         non-empty @vm
@@ -191,7 +192,7 @@ class ContainerELF(Container):
                     loc_db=self.loc_db,
                     base_addr=addr,
                     apply_reloc=apply_reloc,
-                    run_ifuncs=run_ifuncs
+                    reloc_options=reloc_options,
                 )
             else:
                 self._executable = elf_init.ELF(data)
