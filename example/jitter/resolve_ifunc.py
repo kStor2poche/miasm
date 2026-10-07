@@ -4,7 +4,7 @@ from argparse import ArgumentParser
 from miasm.analysis.binary import Container, ContainerELF
 from miasm.analysis.machine import Machine
 from miasm.core.locationdb import LocationDB
-from miasm.jitter.loader.elf import RelocOptions, get_ifuncs, apply_ifunc
+from miasm.jitter.loader.elf import RelocOptions, get_ifuncs_x86, apply_ifunc_x86
 from miasm.loader.elf import ET_EXEC
 
 
@@ -18,10 +18,10 @@ def prepare(run_ifuncs: bool):
 
     myjit = Machine("x86_64").jitter(loc_db, args.jitter)
     myjit.init_stack()
+
+    reloc_options = RelocOptions(run_ifuncs=run_ifuncs, ifunc_jitter_engine=args.jitter)
+
     base_addr = 0x400000
-
-    reloc_options = RelocOptions(run_ifuncs=True, ifunc_jitter_engine=args.jitter)
-
     with open(args.filename, 'rb') as f:
         elf: ContainerELF = Container.from_stream(f, addr=base_addr, loc_db=loc_db, vm=myjit.vm, apply_reloc=True, reloc_options=reloc_options)
         assert isinstance(elf, ContainerELF)
@@ -31,13 +31,13 @@ def prepare(run_ifuncs: bool):
 
     return (base_addr, loc_db, elf, myjit)
 
-def launch(jitter):
+def launch(jitter) -> str:
     jitter.push_uint64_t(0x1337beef)
     jitter.add_breakpoint(0x1337beef, code_sentinelle)
 
     if args.verbose >= 2:
         jitter.set_trace_log(True, True)
-    run_at = jitter.lifter.loc_db.get_name_offset("intermediate")
+    run_at = jitter.lifter.loc_db.get_name_offset("wrapper")
     assert run_at is not None
     jitter.run(run_at)
     return jitter.get_c_str(jitter.cpu.RAX)
@@ -96,9 +96,9 @@ if __name__ == "__main__":
     log.info(f"Set symbol use_func2 (@0x{use_func2_addr + base_addr:x}) to 1")
 
     # we can then run our ifunc resolver
-    ifunc_resolvers = get_ifuncs(elf.executable, base_addr, with_syms=False)
+    ifunc_resolvers = get_ifuncs_x86(elf.executable, base_addr, with_syms=False)
     for reloc, ifunc_resolver in ifunc_resolvers:
-        apply_ifunc(reloc, ifunc_resolver, elf.executable, jitter)
+        apply_ifunc_x86(reloc, ifunc_resolver, elf.executable, jitter)
 
     res2 = launch(jitter)
     log.info(f"Forcing ifunc resolving to func2 returned {res2}.")

@@ -201,7 +201,7 @@ def apply_reloc_x86(elf, vm, section, base_addr, loc_db: LocationDB | None, relo
         reloc_options = RelocOptions()
 
     if reloc_options.run_ifuncs and elf.Ehdr.type == elf_csts.ET_EXEC:
-        log.warning("Running ifuncs as a part of the loading process is only accurate for dynamically-linked executables, as they are normally ran during glibc initialization for static and static-pie executables. See https://sourceware.org/glibc/manual/latest/html_node/Indirect-Functions.html#When-IFUNC-Resolvers-Run.")
+        log.warning("Running ifuncs as a part of the loading process is only accurate for dynamically-linked executables, as they are normally ran during glibc initialization for static and static-pie executables. See GNU C Library Reference Manual, version 2.44, chapter/section 37.4.2 When IFUNC Resolvers Run.")
 
     log.debug(f"Applying relocations for section {section}")
 
@@ -318,7 +318,7 @@ def apply_reloc_x86(elf, vm, section, base_addr, loc_db: LocationDB | None, relo
         else:
             raise ValueError(f"Unknown relocation type: {reloc.type} ({reloc})")
         if is_ifunc and reloc_options.run_ifuncs:
-            addr = _resolve_ifunc(where, addr, elf, ifunc_jitter)
+            addr = _resolve_ifunc_x86(addr, elf, ifunc_jitter)
 
         log.debug(f"Write {addr:x} at {where:x}")
         if elf.size == 64:
@@ -398,7 +398,7 @@ def vm_load_elf(vm, fdata, name="", base_addr=0, loc_db=None, apply_reloc=False,
 
     return elf
 
-def get_ifuncs(elf, base_addr, with_syms=False):
+def get_ifuncs_x86(elf, base_addr, with_syms=False):
     """
     Returns all ifunc resolvers found in @elf along with their GOT entry and their associated symbols if they exist and @with_syms == True
 
@@ -432,7 +432,7 @@ def get_ifuncs(elf, base_addr, with_syms=False):
                     res.append((to_reloc, resolver))
     return res
 
-def _resolve_ifunc(reloc_addr, resolver_addr, elf, run_jitter):
+def _resolve_ifunc_x86(resolver_addr, elf, run_jitter):
     """
     WARNING: this is only accurate for dynamically-linked binaries. Static and static-pie executables' ifuncs are loaded at runtime during glibc initialization.
     WARNING: this requires the jitter to have an initialized stack
@@ -462,7 +462,7 @@ def _resolve_ifunc(reloc_addr, resolver_addr, elf, run_jitter):
     resolved_funcaddr = getattr(run_jitter.cpu, "RAX" if elf.size == 64 else "EAX")
     return resolved_funcaddr
 
-def apply_ifunc(reloc_addr, resolver_addr, elf, jitter, run_jitter=None):
+def apply_ifunc_x86(reloc_addr, resolver_addr, elf, jitter, run_jitter=None):
     """
     WARNING: this is only accurate for dynamically-linked binaries. Static and static-pie executables' ifuncs are loaded at runtime during glibc initialization.
     WARNING: this requires the jitter or run_jitter (if present) to have an initialized stack
@@ -478,7 +478,7 @@ def apply_ifunc(reloc_addr, resolver_addr, elf, jitter, run_jitter=None):
     if run_jitter is None:
         run_jitter = jitter
 
-    resolved_funcaddr = _resolve_ifunc(reloc_addr, resolver_addr, elf, run_jitter)
+    resolved_funcaddr = _resolve_ifunc_x86(resolver_addr, elf, run_jitter)
 
     log.debug(f"Write {resolved_funcaddr:x} at {reloc_addr:x}")
     if elf.size == 64:

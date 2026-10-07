@@ -24,11 +24,11 @@ static func_type resolve_func() {
     return func_1;
 }
 
-char *intermediate() {
+char *wrapper() {
     return func();
 }
 
 int main() {
-    intermediate();
+    wrapper();
     return 0;
 }

@@ -172,8 +172,8 @@ class ContainerELF(Container):
         @apply_reloc (optional): if set, apply relocation during ELF loading
         @reloc_options (optional): see miasm.jitter.loader.elf.RelocOptions
 
-        @addr and @apply_reloc are only meaningful in the context of a
-        non-empty @vm
+        @addr, @apply_reloc and @reloc_options are only meaningful in the context
+        of a non-empty @vm
         """
         from miasm.jitter.loader.elf import vm_load_elf, guess_arch, \
             fill_loc_db_with_symbols
@@ -205,9 +205,9 @@ class ContainerELF(Container):
         # Build the bin_stream instance and set the entry point
         try:
             self._bin_stream = bin_stream_elf(self._executable)
-            if self._executable.Ehdr.type == ET_EXEC:
+            if addr != 0 and self._executable.Ehdr.type == ET_EXEC:
                 addr = 0
-                log.warning("This elf has Ehdr.type == ET_EXEC meaning it isn't relocatable. Using 0 as base_addr.")
+                log.warning("This elf has Ehdr.type == ET_EXEC meaning it isn't relocatable. Using 0 as the base address.")
             self._entry_point = self._executable.Ehdr.entry + addr
         except Exception as error:
             raise ContainerParsingException('Cannot read ELF: %s' % error)
